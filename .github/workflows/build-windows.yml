@@ -45,7 +45,7 @@ jobs:
               void OnMonth();
           };
 
-          extern StockHistory _stock_history[MAX_COMPANIES];
+          StockHistory &GetStockHistory(CompanyID company);
 
           #endif /* STOCK_HISTORY_H */
           '@
@@ -59,10 +59,20 @@ jobs:
           #include "economy_func.h"
           #include "timer/timer.h"
           #include "timer/timer_game_economy.h"
+          #include <utility>
 
           #include "safeguards.h"
 
-          StockHistory _stock_history[MAX_COMPANIES];
+          static std::vector<std::pair<CompanyID, StockHistory>> _stock_histories;
+
+          StockHistory &GetStockHistory(CompanyID company)
+          {
+              for (auto &entry : _stock_histories) {
+                  if (entry.first == company) return entry.second;
+              }
+              _stock_histories.emplace_back(company, StockHistory{});
+              return _stock_histories.back().second;
+          }
 
           void StockHistory::Reset()
           {
@@ -92,15 +102,15 @@ jobs:
               this->current = {last, last, last, last};
           }
 
-          static const IntervalTimer<TimerGameEconomy> _stock_daily({TimerGameEconomy::DAY, TimerGameEconomy::Priority::COMPANY}, [](auto) {
+          static const IntervalTimer<TimerGameEconomy> _stock_daily({TimerGameEconomy::Trigger::Day, TimerGameEconomy::Priority::Company}, [](auto) {
               for (const Company *c : Company::Iterate()) {
-                  _stock_history[c->index.base()].OnDay(CalculateCompanyValue(c));
+                  GetStockHistory(c->index).OnDay(CalculateCompanyValue(c, true));
               }
           });
 
-          static const IntervalTimer<TimerGameEconomy> _stock_monthly({TimerGameEconomy::MONTH, TimerGameEconomy::Priority::COMPANY}, [](auto) {
+          static const IntervalTimer<TimerGameEconomy> _stock_monthly({TimerGameEconomy::Trigger::Month, TimerGameEconomy::Priority::Company}, [](auto) {
               for (const Company *c : Company::Iterate()) {
-                  _stock_history[c->index.base()].OnMonth();
+                  GetStockHistory(c->index).OnMonth();
               }
           });
           '@
