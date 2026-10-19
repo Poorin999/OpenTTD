@@ -9,6 +9,109 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Slow time 10x
+        shell: pwsh
+        run: |
+          $f = (Get-ChildItem -Path src -Recurse -Filter timer_game_tick.h | Select-Object -First 1).FullName
+          if (-not $f) { throw 'timer_game_tick.h not found' }
+          $t = Get-Content $f -Raw
+          $n = $t -replace '(DAY_TICKS\s*=\s*)74\b', '${1}740'
+          if ($n -eq $t) { throw 'DAY_TICKS = 74 not found' }
+          Set-Content -Path $f -Value $n -NoNewline
+
+      - name: Add stock mod
+        shell: pwsh
+        run: |
+          $h = @'
+          #ifndef STOCK_HISTORY_H
+          #define STOCK_HISTORY_H
+
+          #include "company_type.h"
+          #include "economy_type.h"
+          #include <vector>
+
+          struct Candle {
+              Money open = 0, high = 0, low = 0, close = 0;
+          };
+
+          struct StockHistory {
+              static constexpr size_t MAX_CANDLES = 120;
+              std::vector<Candle> candles;
+              Candle current;
+              bool has_current = false;
+
+              void Reset();
+              void OnDay(Money price);
+              void OnMonth();
+          };
+
+          extern StockHistory _stock_history[MAX_COMPANIES];
+
+          #endif /* STOCK_HISTORY_H */
+          '@
+          Set-Content -Path src/stock_history.h -Value $h
+
+          $c = @'
+          #include "stdafx.h"
+          #include "stock_history.h"
+          #include "company_base.h"
+          #include "company_func.h"
+          #include "economy_func.h"
+          #include "timer/timer.h"
+          #include "timer/timer_game_economy.h"
+
+          #include "safeguards.h"
+
+          StockHistory _stock_history[MAX_COMPANIES];
+
+          void StockHistory::Reset()
+          {
+              this->candles.clear();
+              this->current = {};
+              this->has_current = false;
+          }
+
+          void StockHistory::OnDay(Money price)
+          {
+              if (!this->has_current) {
+                  this->current = {price, price, price, price};
+                  this->has_current = true;
+                  return;
+              }
+              if (price > this->current.high) this->current.high = price;
+              if (price < this->current.low) this->current.low = price;
+              this->current.close = price;
+          }
+
+          void StockHistory::OnMonth()
+          {
+              if (!this->has_current) return;
+              this->candles.push_back(this->current);
+              if (this->candles.size() > MAX_CANDLES) this->candles.erase(this->candles.begin());
+              Money last = this->current.close;
+              this->current = {last, last, last, last};
+          }
+
+          static const IntervalTimer<TimerGameEconomy> _stock_daily({TimerGameEconomy::DAY, TimerGameEconomy::Priority::COMPANY}, [](auto) {
+              for (const Company *c : Company::Iterate()) {
+                  _stock_history[c->index.base()].OnDay(CalculateCompanyValue(c));
+              }
+          });
+
+          static const IntervalTimer<TimerGameEconomy> _stock_monthly({TimerGameEconomy::MONTH, TimerGameEconomy::Priority::COMPANY}, [](auto) {
+              for (const Company *c : Company::Iterate()) {
+                  _stock_history[c->index.base()].OnMonth();
+              }
+          });
+          '@
+          Set-Content -Path src/stock_history.cpp -Value $c
+
+          $f = 'src/CMakeLists.txt'
+          $t = Get-Content $f -Raw
+          $t = $t -replace '(?m)^([ \t]*)station_cmd\.cpp[ \t]*\r?$', "`${1}station_cmd.cpp`n`${1}stock_history.cpp`n`${1}stock_history.h"
+          if ($t -notmatch 'stock_history\.cpp') { throw 'Could not patch src/CMakeLists.txt' }
+          Set-Content -Path $f -Value $t -NoNewline
+
       - name: Configure
         shell: pwsh
         run: >
